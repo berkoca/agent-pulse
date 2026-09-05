@@ -5,48 +5,59 @@ Live status of your coding agent on a 4× MAX7219 LED panel, driven by hooks.
 The panel sits on your desk and tells you what the agent is doing without you
 having to look at the terminal: a heartbeat when nothing is happening, a
 marching border while it works, `I NEED REPLY` when it is waiting on you, and a
-`DONE` report with how long the job took, how many tokens it burned and how
-full the context window is.
+`DONE` report with how long the job took, how many tokens it burned, and how
+much of your context window - and, on Codex, your usage limit - is gone.
 
 ---
 
 ## What it shows
 
-| Claude is | The panel shows |
-|-----------|-----------------|
+| The agent is | The panel shows |
+|--------------|-----------------|
 | idle | dark, with one ECG beat every 10s as a sign of life |
 | working | dashes marching around the panel edge |
-| waiting on you | `I` / `NEED` / `REPLY` cycling, centred, 900ms each |
-| finished | `DONE` flashes 3×, the duration holds 15s, then `token …` and `context …%` scroll past, then dark |
+| waiting on you *(Claude Code only)* | `I` / `NEED` / `REPLY` cycling, centred, 900ms each |
+| finished | `DONE` flashes 3×, the duration holds 15s, then the remaining fields scroll past, then dark |
 | interrupted (Ctrl+C) | `ABORT` flashes 2× fast, holds 3s, then dark |
 | session quit | cleared |
 
 ## Supported agents
 
-| Agent | Status |
-|-------|--------|
-| Claude Code | working, and what everything below documents |
-| Codex CLI | not implemented yet |
+| Agent | Status | Report screens |
+|-------|--------|----------------|
+| Claude Code | working | duration, tokens, context |
+| Codex CLI | working | duration, tokens, **usage limit**, context |
 
-Codex's hook system has the same shape - `~/.codex/hooks.json` or `[hooks]` in
-`config.toml`, the same `matcher` + `hooks` structure, and the same payload
-field names (`session_id`, `transcript_path`, `cwd`, `hook_event_name`). So the
-transport and the firmware need no changes at all.
+Both agents use the same hook shape - the same `matcher` + `hooks` structure
+and the same payload fields (`session_id`, `transcript_path`, `cwd`,
+`hook_event_name`) - so the transport and the firmware are shared untouched.
+Only the transcript reader differs, and `stop_hook.py` picks it by looking at
+the transcript path.
 
-Two things differ. Codex has an **`Interrupt` event**, which means
-`cancel_watch.py` - the ugliest part of this project - is simply not needed
-there. And its transcript is a different format, so the duration, token and
-context figures need a Codex-specific reader; the plan is to take the duration
-from a timestamp in the turn marker instead, which needs no transcript at all.
+Codex gives more away, so its adapter is mostly reading where Claude's has to
+infer:
 
-A finished job reads, in order:
+| | Claude Code | Codex |
+|---|---|---|
+| duration | walk back through question/answer pairs | `task_complete.duration_ms` |
+| tokens | sum every request since the job began | `turn_token_usage.total_tokens` |
+| context window | infer from the model id and observed size | `model_context_window` |
+| usage limit | not reachable from a hook | `rate_limits.primary.used_percent` |
+| cancellation | tail the transcript (`cancel_watch.py`) | real `Interrupt` event |
+
+That last row is why `cancel_watch.py` never runs under Codex - `prompt_hook.py`
+skips it, and `Interrupt` is wired straight to `#X` instead.
+
+A finished job reads, in order - on Codex there is one screen more:
 
 ```
-  D O N E          flash ×3, 1.5s
-  4 m 3 9 s        static, 15s
-  token 1.9M       scrolls once
-  context 27%      scrolls once
-  (dark)
+  Claude Code                 Codex
+  D O N E   flash ×3, 1.5s    D O N E
+  4 m 3 9 s static, 15s       4 s
+  token 1.9M  scrolls         token 26.2k
+  context 27% scrolls         limit 3%
+  (dark)                      context 10%
+                              (dark)
 ```
 
 `token` is everything the job was charged for - input, cache creation, cache
@@ -57,7 +68,8 @@ how full the context window is, from the most recent request.
 
 ## Requirements
 
-**Tested only on macOS 15 (Darwin 25.6) with Claude Code 2.1.259.** Nothing in
+**Tested only on macOS 15 (Darwin 25.6), with Claude Code 2.1.259 and Codex
+CLI 0.153.4.** Nothing in
 it is macOS-specific except the serial device glob in `send.py`
 (`/dev/cu.usbserial*`); on Linux that would be `/dev/ttyUSB*` plus membership of
 the `dialout` group. It has not been run there.
@@ -119,9 +131,9 @@ This board needs the `atmega328old` variant (57600 baud upload). Plain
 
 ```sh
 cd ~/Desktop/agent-pulse
-arduino-cli compile -b arduino:avr:nano:cpu=atmega328old ClaudeMatrix
+arduino-cli compile -b arduino:avr:nano:cpu=atmega328old firmware/AgentPulse
 arduino-cli upload  -b arduino:avr:nano:cpu=atmega328old \
-                    -p $(ls /dev/cu.usbserial* | head -1) ClaudeMatrix
+                    -p $(ls /dev/cu.usbserial* | head -1) firmware/AgentPulse
 ```
 
 ### 3. Check it
@@ -146,7 +158,7 @@ SH
 chmod +x ~/.local/bin/matrix
 ```
 
-### 5. Hooks
+### 5. Hooks (Claude Code)
 
 Add to `~/.claude/settings.json`, with absolute paths:
 
@@ -177,38 +189,117 @@ Add to `~/.claude/settings.json`, with absolute paths:
 }
 ```
 
+### 6. Hooks (Codex)
+
+Codex ships inside the ChatGPT desktop app and is not on `PATH`. Link it first:
+
+```sh
+ln -sf /Applications/ChatGPT.app/Contents/Resources/codex ~/.local/bin/codex
+```
+
+Same hook structure as Claude Code, in `~/.codex/hooks.json`, plus the
+`Interrupt` event:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "timeout": 5,
+        "command": "/Users/you/Desktop/agent-pulse/prompt_hook.py" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "timeout": 5,
+        "command": "/Users/you/Desktop/agent-pulse/stop_hook.py" }] }
+    ],
+    "Interrupt": [
+      { "hooks": [{ "type": "command", "timeout": 5,
+        "command": "/Users/you/Desktop/agent-pulse/notify_hook.py '#X'" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "timeout": 5,
+        "command": "/Users/you/Desktop/agent-pulse/notify_hook.py '#C'" }] }
+    ]
+  }
+}
+```
+
+**Check `~/.codex/hooks.json` before you write it.** On first launch the ChatGPT
+app imports Claude Code's configuration, hooks included, so if you set up Claude
+Code first your hooks may already be there under their old paths.
+
+### 7. Trust the hooks (Codex)
+
+**Writing the file is not enough. Codex will not run a hook until you have
+reviewed and approved it, and it says nothing when it skips one.** Approve them
+by starting the terminal UI once:
+
+```sh
+codex
+```
+
+It lists the hooks on startup and asks you to trust them. The review only
+appears in the terminal UI - the desktop app does not show it, so a hook that
+has never been trusted stays silent there too.
+
+This is sensible behaviour rather than a bug: those hooks are shell commands,
+and the app may have copied them out of another tool's config without you ever
+seeing them.
+
 ---
 
 ## Files
 
-| File | What it does |
-|------|--------------|
-| `ClaudeMatrix/ClaudeMatrix.ino` | Firmware. A non-blocking state machine: idle, scrolling, flashing, holding a report, working, asking, beating. Owns all the timing. |
-| `send.py` | Sends one line over serial. Standard library only - `termios` directly, no `pyserial`. |
-| `prompt_hook.py` | `UserPromptSubmit`: starts the working animation and the cancellation watcher. |
-| `stop_hook.py` | `Stop`: works out the job's duration, tokens and context, sends the report. |
-| `cancel_watch.py` | Per-turn watcher that catches Ctrl+C. See [Catching Ctrl+C](#catching-ctrlc). |
-| `notify_hook.py` | Fire-and-forget hook that sends one command it is given. |
+Three kinds of thing, kept apart: what you **run**, what gets **imported**, and
+what gets **flashed**.
+
+```
+agent-pulse/
+├── prompt_hook.py            UserPromptSubmit: start the animation
+├── stop_hook.py              Stop: work out the report and send it
+├── notify_hook.py            one fixed command, for the simple events
+├── cancel_watch.py           Claude-only Ctrl+C watcher (spawned per turn)
+├── send.py                   talks to the board over serial; also the CLI
+├── pulse/
+│   ├── report.py             formatting: durations, token counts, percentages
+│   └── agents/
+│       ├── claude.py         reads a Claude Code transcript
+│       └── codex.py          reads a Codex rollout
+└── firmware/
+    └── AgentPulse/
+        └── AgentPulse.ino    the state machine that owns all the timing
+```
+
+The entry points sit at the root on purpose: the agents' config files reference
+them by absolute path, so they should be easy to find and easy to keep stable.
+Everything importable is under `pulse/`, which uses relative imports and does
+not depend on the caller having arranged `sys.path`.
 
 Every hook exits 0 even with no board plugged in, and none print on stdout,
 because a `UserPromptSubmit` hook's stdout would be injected into the session
 context.
 
----
-
 ## How it works
 
-The host only speaks at four moments. Everything with a duration - the beat
-interval, the report timings, the animations - is timed by the board, which is
-why the panel keeps behaving sensibly with Claude Code closed.
+The host speaks only on these events - five of them on Claude Code, four on
+Codex - and in an ordinary turn that means two sends: one at the prompt, one at
+the end. Everything with a duration - the beat interval, the report timings,
+the animations - is timed by the board, which is why the panel keeps behaving
+sensibly with the agent closed.
 
-| Event | Matcher | Sends |
-|-------|---------|-------|
-| `UserPromptSubmit` | — | `#L` — clear the last report, start working |
-| `PreToolUse` | `AskUserQuestion` | `#Q` — waiting on an answer |
-| `PostToolUse` | `AskUserQuestion` | `#L` — answered, back to working |
-| `Stop` | — | `#N<duration>,token …,context …` |
-| `SessionEnd` | — | `#C` — clear |
+| Event | Matcher | Sends | Agent |
+|-------|---------|-------|-------|
+| `UserPromptSubmit` | — | `#L` — clear the last report, start working | both |
+| `PreToolUse` | `AskUserQuestion` | `#Q` — waiting on an answer | Claude Code |
+| `PostToolUse` | `AskUserQuestion` | `#L` — answered, back to working | Claude Code |
+| `Stop` | — | `#N<duration>,token …,…` | both |
+| `SessionEnd` | — | `#C` — clear | both |
+| `Interrupt` | — | `#X` — flash `ABORT` | Codex |
+
+`I NEED REPLY` is currently Claude-only: it hangs off the `AskUserQuestion`
+tool, which Codex does not have. Codex's `PermissionRequest` event is the
+obvious counterpart, but nothing fires when a permission is *granted*, so the
+panel would sit on `I NEED REPLY` while work continued. Left unwired rather
+than half-wired.
 
 ### Serial protocol
 
@@ -218,7 +309,7 @@ why the panel keeps behaving sensibly with Claude Code closed.
 |---------|--------|
 | `#L` | working: march the border |
 | `#Q` | waiting: cycle `I` / `NEED` / `REPLY` |
-| `#N<a>,<b>,<c>` | finished: flash `DONE`, hold field `a` still, scroll `b` and `c`, go dark. Fields are optional. |
+| `#N<a>,<b>,…` | finished: flash `DONE`, hold field `a` still, scroll the rest, go dark. Up to four fields, all optional. |
 | `#X` | interrupted: flash `ABORT`, hold, go dark |
 | `#B<0-15>` | brightness, saved to EEPROM |
 | `#S<10-150>` | scroll frame delay in ms |
@@ -243,8 +334,8 @@ amount, `send.py` waits for the sketch's `READY` banner, capped by `--wait`
 (default 2.5s), and a `flock` on `/tmp/agent-pulse.lock` stops two
 senders fighting over the port.
 
-Two consequences shape the whole design. Sends are expensive, so the host only
-speaks four times per turn and the board keeps its own time. And brightness has
+Two consequences shape the whole design. Sends are expensive, so the host
+speaks about twice per turn and the board keeps its own time. And brightness has
 to live in EEPROM, or `#B` would only last until the next command arrived.
 
 The reset has one useful side effect: the panel blanks the instant a new prompt
@@ -283,9 +374,11 @@ display is correct. Rows are unaffected: row 0 is the top. It only matters for
 asymmetric shapes - `drawHeart()` writes its table to `COLUMNS - 1 - p` so the
 ECG spike lands before the undershoot on the panel.
 
-### Catching Ctrl+C
+### Catching Ctrl+C (Claude Code only)
 
-There is no cancellation hook. This version of Claude Code offers exactly nine
+Codex has a real `Interrupt` event, so none of what follows applies to it.
+
+Claude Code has no cancellation hook. This version offers exactly nine
 events (`PreToolUse`, `PostToolUse`, `Notification`, `UserPromptSubmit`,
 `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact`) and none
 fire on an interrupt, so the working animation would otherwise run forever.
@@ -307,9 +400,10 @@ what is appended after it starts.
 One knock-on: an interrupt is logged as a *user* entry, so `is_human_turn()`
 has to exclude it or it would count as a fresh prompt and reset the duration.
 
-### What the duration covers
+### What the duration covers (Claude Code only)
 
-The whole job, not just the last leg.
+The whole job, not just the last leg. Codex hands over `task_complete.duration_ms`
+and needs none of this.
 
 A turn where Claude used `AskUserQuestion` needs no special handling: the
 answer comes back as a `tool_result` inside the *same* turn, so `Stop` never
@@ -323,17 +417,21 @@ text right before it ends in `?`, that prompt was an answer, so keep going
 back. That is a heuristic, bounded by `MAX_QUESTION_HOPS` (6) and
 `MAX_SPAN_HOURS` (12). Set `MAX_QUESTION_HOPS = 0` to disable it.
 
-### Context percentage
+### Context percentage (Claude Code only)
+
+Codex reports `model_context_window` directly, so this applies to Claude Code.
 
 Claude Code records neither the context window size nor the `[1m]` suffix on
 the model id in the transcript - it logs plain `claude-opus-5` - so
 `context_limit()` starts from the `model` in `~/.claude/settings.json` and
 widens to 1M if the observed context already exceeds 200k.
 
-This is the context window, **not** the five-hour session quota. That is not
-reachable from a hook: Claude Code keeps no local copy, and `/usage` reads it
-live from an endpoint that needs the OAuth token out of the login keychain and
-sits behind Cloudflare.
+This is the context window, **not** the five-hour session quota. That one is
+not reachable from a Claude Code hook at all: Claude Code keeps no local copy,
+and `/usage` reads it live from an endpoint that needs the OAuth token out of
+the login keychain and sits behind Cloudflare. Codex hands its own quota over
+in `token_count.rate_limits`, which is why the `limit` screen exists there and
+not here.
 
 ---
 
@@ -346,6 +444,7 @@ Constants at the top of the sketch:
 | `DEFAULT_BRIGHTNESS` | 1 | boot brightness, overridden by EEPROM |
 | `AWAIT_MS` | 10s | idle beat interval |
 | `HOLD_STATIC_MS` | 15s | how long the duration stays up |
+| `HOLD_SLOTS` | 4 | how many report screens `#N` accepts |
 | `BLINK_COUNT` / `_ON_MS` / `_OFF_MS` | 3 / 300 / 250 | the `DONE` flash |
 | `CANCEL_BLINKS` / `_ON_MS` / `_OFF_MS` | 2 / 170 / 130 | the `ABORT` flash |
 | `CANCEL_HOLD_MS` | 3s | how long `ABORT` stays up |
@@ -360,14 +459,16 @@ wrong modules, try `PAROLA_HW`, `GENERIC_HW` or `ICSTATION_HW`.
 
 ## Known limitations
 
-- **One panel, one producer.** Two Claude Code sessions both write to it and
+- **One panel, one producer.** Two sessions - two Claude Code windows, or
+  Claude Code and Codex at once - both write to it and
   the last event wins, so a session that finishes while another is still
   working will park `DONE` on the panel. Sends are serialised by the lock so
   nothing breaks, but the display can be wrong. Fixing it properly means the
   board keeping a per-session registry rather than taking one-shot commands.
 - **macOS only, in practice.** See [Requirements](#requirements).
-- **Ctrl+C detection is a transcript tail**, not an API. If Claude Code changes
-  how it records interrupts, it stops working silently.
+- **Ctrl+C detection on Claude Code is a transcript tail**, not an API. If it
+  changes how it records interrupts, detection stops working silently. Codex is
+  unaffected: it has a real `Interrupt` event.
 
 ---
 
@@ -376,16 +477,24 @@ wrong modules, try `PAROLA_HW`, `GENERIC_HW` or `ICSTATION_HW`.
 - **Text mirrored, or split across the wrong modules** — change
   `HARDWARE_TYPE` at the top of the sketch.
 - **Nothing at all** — `matrix -v "#N42s"` should echo `NOTIFY 1`. If that
-  comes back the serial path is fine and the problem is wiring or power. If not, check `ls /dev/cu.usbserial*` and override with
-  `AGENT_PULSE_PORT`.
+  comes back the serial path is fine and the problem is wiring or power. If
+  not, check `ls /dev/cu.usbserial*` and override with `AGENT_PULSE_PORT`.
 - **Dark right after plugging in** — expected for up to 10 seconds, until the
   first idle beat. Boot only prints `READY` on serial.
 - **A stale report stays on screen** — the `UserPromptSubmit` hook is not
-  firing. Check the paths in `~/.claude/settings.json` are absolute.
+  firing. Check the paths in `~/.claude/settings.json` (or `~/.codex/hooks.json`)
+  are absolute, and on Codex that the hooks are trusted.
 - **Port changed after replugging** — the CH340 enumerates as
   `/dev/cu.usbserial-1x0` and the number does change (seen going `-140` →
   `-130`). `send.py` globs for it so the hooks are unaffected, but an
   `arduino-cli upload -p …` needs the current name.
+- **Codex does nothing at all** — almost certainly untrusted hooks. Run `codex`
+  in a terminal once and approve them; see
+  [Trust the hooks](#7-trust-the-hooks-codex). To confirm that is the cause,
+  check that Codex never even tried: `sqlite3 ~/.codex/logs_2.sqlite "SELECT
+  COUNT(*) FROM logs WHERE feedback_log_body LIKE '%agent-pulse%';"` returning 0
+  means it skipped the hooks rather than failing to run them. `codex features
+  list | grep hooks` should say `stable true`.
 - **Upload fails with "not in sync"** — either you left off
   `:cpu=atmega328old`, or another process is holding the port (a serial
   monitor, or a `send.py` still in its wait window).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send a line of text to the ClaudeMatrix display over USB serial.
+"""Send a line of text to the agent-pulse display over USB serial.
 
 Uses only the standard library (termios), so there is no pyserial dependency.
 Port is picked from $AGENT_PULSE_PORT, else the first /dev/cu.usbserial*.

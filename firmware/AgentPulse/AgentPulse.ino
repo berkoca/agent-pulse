@@ -1,5 +1,5 @@
 /*
- * ClaudeMatrix - 4x MAX7219 LED matrix status display for Claude Code
+ * agent-pulse - 4x MAX7219 LED matrix status display for coding agents
  *
  * Wiring (Arduino Nano, hardware SPI):
  *   MAX7219 VCC  -> 5V
@@ -67,7 +67,7 @@
 
 // After DONE, each field of the #N payload gets its own screen, then dark.
 // The first is held still; the rest scroll past once each.
-#define HOLD_SLOTS 3
+#define HOLD_SLOTS 4
 #define HOLD_STATIC_MS 15000
 // While nothing is happening the panel is dark, apart from one ECG beat this
 // often, as a sign of life.
@@ -373,7 +373,7 @@ void setup() {
   display.begin();
   display.setIntensity(brightness);
   goIdle();
-  Serial.println(F("READY ClaudeMatrix 4x MAX7219"));
+  Serial.println(F("READY agent-pulse 4x MAX7219"));
 }
 
 void loop() {

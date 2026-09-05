@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Claude Code UserPromptSubmit hook: start the working animation and the
-cancellation watcher.
+"""UserPromptSubmit hook: start the working animation, and on Claude Code also
+start the cancellation watcher.
+
+Codex needs no watcher: it has a real Interrupt event, wired straight to
+notify_hook.py '#X'. Claude Code has no such event, so the watcher tails the
+transcript instead - see cancel_watch.py.
 
 Prints nothing on stdout, because a UserPromptSubmit hook's stdout is injected
 into the session context.
@@ -12,6 +16,10 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+from pulse.agents import codex                  # noqa: E402
+
 SENDER = os.path.join(HERE, "send.py")
 WATCHER = os.path.join(HERE, "cancel_watch.py")
 MARKER_DIR = "/tmp/agent-pulse-turn"
@@ -40,17 +48,21 @@ def main():
 
     session = payload.get("session_id")
     transcript = payload.get("transcript_path")
-    if session and transcript:
-        # The nonce lets a stale watcher notice a newer turn has taken over.
-        nonce = "%d" % time.time_ns()
-        marker = os.path.join(MARKER_DIR, str(session))
-        try:
-            os.makedirs(MARKER_DIR, exist_ok=True)
-            with open(marker, "w", encoding="utf-8") as fh:
-                fh.write(nonce)
-        except OSError:
-            return 0
-        spawn([sys.executable, WATCHER, marker, nonce, transcript])
+    if not (session and transcript):
+        return 0
+    if codex.owns(payload, transcript):
+        return 0    # Interrupt covers it
+
+    # The nonce lets a stale watcher notice a newer turn has taken over.
+    nonce = "%d" % time.time_ns()
+    marker = os.path.join(MARKER_DIR, str(session))
+    try:
+        os.makedirs(MARKER_DIR, exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write(nonce)
+    except OSError:
+        return 0
+    spawn([sys.executable, WATCHER, marker, nonce, transcript])
     return 0
 
 
