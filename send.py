@@ -2,7 +2,7 @@
 """Send a line of text to the ClaudeMatrix display over USB serial.
 
 Uses only the standard library (termios), so there is no pyserial dependency.
-Port is picked from $CLAUDE_MATRIX_PORT, else the first /dev/cu.usbserial*.
+Port is picked from $AGENT_PULSE_PORT, else the first /dev/cu.usbserial*.
 
 Opening the port asserts DTR, which resets the Nano, so nothing can be written
 until the sketch has booted. Rather than sleep a fixed amount we wait for the
@@ -21,7 +21,7 @@ import unicodedata
 
 BAUD = termios.B115200
 PORT_GLOB = "/dev/cu.usbserial*"
-LOCK_PATH = "/tmp/claude-code-matrix.lock"
+LOCK_PATH = "/tmp/agent-pulse.lock"
 MAX_LEN = 160
 
 # The MAX7219 font is plain ASCII, so fold Turkish and typographic characters.
@@ -34,7 +34,7 @@ FOLD = str.maketrans({
 
 
 def find_port():
-    env = os.environ.get("CLAUDE_MATRIX_PORT")
+    env = os.environ.get("AGENT_PULSE_PORT")
     if env:
         return env
     ports = sorted(glob.glob(PORT_GLOB))
@@ -130,13 +130,13 @@ def main():
 
     port = args.port or find_port()
     if not port:
-        print("claude-code-matrix: no serial port found (%s)" % PORT_GLOB,
+        print("agent-pulse: no serial port found (%s)" % PORT_GLOB,
               file=sys.stderr)
         return 1
 
     lock = acquire_lock(args.lock_wait)
     if lock is None:
-        print("claude-code-matrix: another sender is holding %s" % LOCK_PATH,
+        print("agent-pulse: another sender is holding %s" % LOCK_PATH,
               file=sys.stderr)
         return 1
 
@@ -144,7 +144,7 @@ def main():
         try:
             fd = open_port(port)
         except OSError as e:
-            print("claude-code-matrix: cannot open %s: %s" % (port, e),
+            print("agent-pulse: cannot open %s: %s" % (port, e),
                   file=sys.stderr)
             return 1
         try:

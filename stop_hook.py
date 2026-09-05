@@ -31,7 +31,7 @@ MAX_SPAN_HOURS = 12
 # model id, so start from the configured model and widen if the transcript
 # proves the window is bigger than that.
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
-MARKER_DIR = "/tmp/claude-code-matrix-turn"
+MARKER_DIR = "/tmp/agent-pulse-turn"
 
 # Claude Code logs an interrupt as a user entry, so it has to be excluded or it
 # would count as a fresh prompt and reset the duration.

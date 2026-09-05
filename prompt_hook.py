@@ -14,7 +14,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 SENDER = os.path.join(HERE, "send.py")
 WATCHER = os.path.join(HERE, "cancel_watch.py")
-MARKER_DIR = "/tmp/claude-code-matrix-turn"
+MARKER_DIR = "/tmp/agent-pulse-turn"
 
 
 def spawn(argv):

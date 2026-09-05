@@ -1,8 +1,8 @@
-# claude-code-matrix
+# agent-pulse
 
-Live status of Claude Code on a 4× MAX7219 LED panel, driven by hooks.
+Live status of your coding agent on a 4× MAX7219 LED panel, driven by hooks.
 
-The panel sits on your desk and tells you what Claude is doing without you
+The panel sits on your desk and tells you what the agent is doing without you
 having to look at the terminal: a heartbeat when nothing is happening, a
 marching border while it works, `I NEED REPLY` when it is waiting on you, and a
 `DONE` report with how long the job took, how many tokens it burned and how
@@ -20,6 +20,24 @@ full the context window is.
 | finished | `DONE` flashes 3×, the duration holds 15s, then `token …` and `context …%` scroll past, then dark |
 | interrupted (Ctrl+C) | `ABORT` flashes 2× fast, holds 3s, then dark |
 | session quit | cleared |
+
+## Supported agents
+
+| Agent | Status |
+|-------|--------|
+| Claude Code | working, and what everything below documents |
+| Codex CLI | not implemented yet |
+
+Codex's hook system has the same shape - `~/.codex/hooks.json` or `[hooks]` in
+`config.toml`, the same `matcher` + `hooks` structure, and the same payload
+field names (`session_id`, `transcript_path`, `cwd`, `hook_event_name`). So the
+transport and the firmware need no changes at all.
+
+Two things differ. Codex has an **`Interrupt` event**, which means
+`cancel_watch.py` - the ugliest part of this project - is simply not needed
+there. And its transcript is a different format, so the duration, token and
+context figures need a Codex-specific reader; the plan is to take the duration
+from a timestamp in the turn marker instead, which needs no transcript at all.
 
 A finished job reads, in order:
 
@@ -100,7 +118,7 @@ This board needs the `atmega328old` variant (57600 baud upload). Plain
 `arduino:avr:nano` fails with "not in sync".
 
 ```sh
-cd ~/Desktop/claude-code-matrix
+cd ~/Desktop/agent-pulse
 arduino-cli compile -b arduino:avr:nano:cpu=atmega328old ClaudeMatrix
 arduino-cli upload  -b arduino:avr:nano:cpu=atmega328old \
                     -p $(ls /dev/cu.usbserial* | head -1) ClaudeMatrix
@@ -123,7 +141,7 @@ board to come up.)
 ```sh
 cat > ~/.local/bin/matrix <<'SH'
 #!/bin/sh
-exec /usr/bin/python3 "$HOME/Desktop/claude-code-matrix/send.py" "$@"
+exec /usr/bin/python3 "$HOME/Desktop/agent-pulse/send.py" "$@"
 SH
 chmod +x ~/.local/bin/matrix
 ```
@@ -137,23 +155,23 @@ Add to `~/.claude/settings.json`, with absolute paths:
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "timeout": 5,
-        "command": "/Users/you/Desktop/claude-code-matrix/prompt_hook.py" }] }
+        "command": "/Users/you/Desktop/agent-pulse/prompt_hook.py" }] }
     ],
     "PreToolUse": [
       { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "timeout": 5,
-        "command": "/Users/you/Desktop/claude-code-matrix/notify_hook.py '#Q'" }] }
+        "command": "/Users/you/Desktop/agent-pulse/notify_hook.py '#Q'" }] }
     ],
     "PostToolUse": [
       { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "timeout": 5,
-        "command": "/Users/you/Desktop/claude-code-matrix/notify_hook.py '#L'" }] }
+        "command": "/Users/you/Desktop/agent-pulse/notify_hook.py '#L'" }] }
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "timeout": 5,
-        "command": "/Users/you/Desktop/claude-code-matrix/stop_hook.py" }] }
+        "command": "/Users/you/Desktop/agent-pulse/stop_hook.py" }] }
     ],
     "SessionEnd": [
       { "hooks": [{ "type": "command", "timeout": 5,
-        "command": "/Users/you/Desktop/claude-code-matrix/notify_hook.py '#C'" }] }
+        "command": "/Users/you/Desktop/agent-pulse/notify_hook.py '#C'" }] }
     ]
   }
 }
@@ -222,7 +240,7 @@ documented in the code too, but they are the reason it is shaped this way.
 macOS asserts DTR on open, which resets the Nano; nothing can be written until
 the sketch boots, measured at 1.47s on this board. Rather than sleep a fixed
 amount, `send.py` waits for the sketch's `READY` banner, capped by `--wait`
-(default 2.5s), and a `flock` on `/tmp/claude-code-matrix.lock` stops two
+(default 2.5s), and a `flock` on `/tmp/agent-pulse.lock` stops two
 senders fighting over the port.
 
 Two consequences shape the whole design. Sends are expensive, so the host only
@@ -277,7 +295,7 @@ normal finish and an interrupt both leave `status: idle`. What does work is the
 transcript, which records an interrupt explicitly as a user entry reading
 `[Request interrupted by user]`.
 
-So `prompt_hook.py` writes `/tmp/claude-code-matrix-turn/<session_id>`
+So `prompt_hook.py` writes `/tmp/agent-pulse-turn/<session_id>`
 containing a nonce and spawns `cancel_watch.py`, which tails the transcript
 from its current size and sends `#X` if that record appears. The watcher lives
 only as long as the turn: `stop_hook.py` deletes the marker before anything
@@ -359,7 +377,7 @@ wrong modules, try `PAROLA_HW`, `GENERIC_HW` or `ICSTATION_HW`.
   `HARDWARE_TYPE` at the top of the sketch.
 - **Nothing at all** — `matrix -v "#N42s"` should echo `NOTIFY 1`. If that
   comes back the serial path is fine and the problem is wiring or power. If not, check `ls /dev/cu.usbserial*` and override with
-  `CLAUDE_MATRIX_PORT`.
+  `AGENT_PULSE_PORT`.
 - **Dark right after plugging in** — expected for up to 10 seconds, until the
   first idle beat. Boot only prints `READY` on serial.
 - **A stale report stays on screen** — the `UserPromptSubmit` hook is not
